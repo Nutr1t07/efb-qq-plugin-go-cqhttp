@@ -218,7 +218,7 @@ class QQMsgProcessor:
             else:
                 return self.qq_text_simple_wrapper(text, at_list)
         except Exception:
-            return asyncio.run(self.qq_group_broadcast_alternative_wrapper(data, chat))
+            return await self.qq_group_broadcast_alternative_wrapper(data, chat)
 
     async def qq_group_broadcast_alternative_wrapper(self, data, chat: Chat):
         try:

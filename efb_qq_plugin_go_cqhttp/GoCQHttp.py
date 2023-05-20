@@ -74,6 +74,12 @@ class GoCQHttp(BaseClient):
     repeat_counter = 0
     update_repeat_counter = 0
 
+    def add_task(self, awaitable):
+        return asyncio.run_coroutine_threadsafe(awaitable, self.sideloop)
+
+    def run_await(self, awaitable, timeout=10):
+        return self.add_task(awaitable).result(timeout)
+
     def __init__(self, client_id: str, config: Dict[str, Any], channel):
         super().__init__(client_id, config)
         self.client_config = config[self.client_id]
@@ -88,10 +94,14 @@ class GoCQHttp(BaseClient):
         self.is_logged_in = False
         self.msg_decorator = QQMsgProcessor(instance=self)
 
-        self.loop = asyncio.get_event_loop()
+        self.sideloop = asyncio.new_event_loop()
+        self.sidet = threading.Thread(target=self.sideloop.run_forever, daemon=True)
+        self.sidet.start()
+
+        self.loop = asyncio.new_event_loop()
         self.shutdown_event = asyncio.Event()
 
-        asyncio.set_event_loop(self.loop)
+        # asyncio.set_event_loop(self.loop)
 
         async def forward_msgs_wrapper(msg_elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             fmt_msgs: List[Dict] = []
@@ -528,7 +538,7 @@ class GoCQHttp(BaseClient):
             )
             coordinator.send_message(msg)
 
-        asyncio.run(self.check_status_periodically(run_once=True))
+        self.run_await(self.check_status_periodically(run_once=True))
 
     def run_instance(self, host: str, port: int, debug: bool = False):
         def _run():
@@ -563,7 +573,7 @@ class GoCQHttp(BaseClient):
         desc=("Force efb-qq-slave to refresh status from CoolQ Client.\n" "Usage: {function_name}"),
     )
     def login(self, param: str = ""):
-        asyncio.run(self.check_status_periodically(run_once=True))
+        self.run_await(self.check_status_periodically(run_once=True))
         return "Done"
 
     async def get_stranger_info(self, user_id: int, no_cache: bool = False) -> Dict[str, Any]:
@@ -647,7 +657,7 @@ class GoCQHttp(BaseClient):
         if msg.edit:
             try:
                 uid_type = msg.uid.split("_")
-                asyncio.run(self.recall_message(uid_type[1]))
+                self.run_await(self.recall_message(uid_type[1]))
             except CoolQAPIFailureException:
                 raise EFBOperationNotSupported(
                     ("Failed to recall the message!\n" "This message may have already expired.")
@@ -657,7 +667,7 @@ class GoCQHttp(BaseClient):
             if msg.text == "kick`":
                 group_id = chat_type[1]
                 user_id = msg.target.author.uid
-                asyncio.run(self.coolq_api_query("set_group_kick", group_id=group_id, user_id=user_id))
+                self.run_await(self.coolq_api_query("set_group_kick", group_id=group_id, user_id=user_id))
             else:
                 if isinstance(msg.target, Message):
                     max_length = 50
@@ -672,7 +682,7 @@ class GoCQHttp(BaseClient):
                         tgt_text,
                         coolq_text_encode(msg.text),
                     )
-                msg.uid = asyncio.run(self.coolq_send_message(chat_type[0], chat_type[1], msg.text))
+                msg.uid = self.run_await(self.coolq_send_message(chat_type[0], chat_type[1], msg.text))
                 self.logger.debug("[%s] Sent as a text message. %s", msg.uid, msg.text)
         elif msg.type in (MsgType.Image, MsgType.Sticker, MsgType.Animation):
             self.logger.info("[%s] Image/Sticker/Animation %s", msg.uid, msg.type)
@@ -694,17 +704,17 @@ class GoCQHttp(BaseClient):
                     f.seek(0)
                     text += m.coolq_code_image_wrapper(f, f.name)
             if msg.text:
-                msg.uid = asyncio.run(
+                msg.uid = self.run_await(
                     self.coolq_send_message(chat_type[0], chat_type[1], text + coolq_text_encode(msg.text))
                 )
             else:
-                msg.uid = asyncio.run(self.coolq_send_message(chat_type[0], chat_type[1], text))
+                msg.uid = self.run_await(self.coolq_send_message(chat_type[0], chat_type[1], text))
         # todo More MsgType Support
         elif msg.type is MsgType.Voice:
             text = m.coolq_voice_image_wrapper(msg.file, msg.path)
-            msg.uid = asyncio.run(self.coolq_send_message(chat_type[0], chat_type[1], text))
+            msg.uid = self.run_await(self.coolq_send_message(chat_type[0], chat_type[1], text))
             if msg.text:
-                asyncio.run(self.coolq_send_message(chat_type[0], chat_type[1], msg.text))
+                self.run_await(self.coolq_send_message(chat_type[0], chat_type[1], msg.text))
         return msg
 
     async def call_msg_decorator(self, msg_type: str, *args) -> List[Message]:
@@ -1007,7 +1017,7 @@ class GoCQHttp(BaseClient):
                 raise EFBMessageError(("You can only recall your own messages."))
             try:
                 uid_type = status.message.uid.split("_")
-                asyncio.run(self.recall_message(uid_type[1]))
+                self.run_await(self.recall_message(uid_type[1]))
             except CoolQAPIFailureException:
                 raise EFBMessageError(("Failed to recall the message. This message may have already expired."))
         else:
@@ -1096,7 +1106,7 @@ class GoCQHttp(BaseClient):
         async def _get_chats():
             return await asyncio.gather(self.get_friends(), self.get_groups())
 
-        friend_chats, group_chats = asyncio.run(_get_chats())
+        friend_chats, group_chats = self.run_await(_get_chats())
         return friend_chats + group_chats
 
     def get_chat(self, chat_uid: ChatID) -> "Chat":
@@ -1104,19 +1114,19 @@ class GoCQHttp(BaseClient):
         chat_type = chat_uid.split("_")
         if chat_type[0] == "private":
             qq_uid = int(chat_type[1])
-            remark = asyncio.run(self.get_friend_remark(qq_uid))
+            remark = self.run_await(self.get_friend_remark(qq_uid))
             context: Dict[str, Any] = {"user_id": qq_uid}
             if remark is not None:
                 context["alias"] = remark
-            return asyncio.run(self.chat_manager.build_efb_chat_as_private(context))
+            return self.run_await(self.chat_manager.build_efb_chat_as_private(context))
         elif chat_type[0] == "group":
             group_id = int(chat_type[1])
             context = {"message_type": "group", "group_id": group_id}
-            return asyncio.run(self.chat_manager.build_efb_chat_as_group(context, update_member=True))
+            return self.run_await(self.chat_manager.build_efb_chat_as_group(context, update_member=True))
         elif chat_type[0] == "discuss":
             discuss_id = int(chat_type[1])
             context = {"message_type": "discuss", "discuss_id": discuss_id}
-            return asyncio.run(self.chat_manager.build_efb_chat_as_group(context))
+            return self.run_await(self.chat_manager.build_efb_chat_as_group(context))
         raise EFBChatNotFound()
 
     async def check_self_update(self, run_once: bool = False):
@@ -1136,7 +1146,7 @@ class GoCQHttp(BaseClient):
             await asyncio.sleep(interval)
 
     def poll(self):
-        asyncio.run(self.check_self_update(run_once=True))
+        self.run_await(self.check_self_update(run_once=True))
         self.run_instance(
             host=self.client_config["host"],
             port=self.client_config["port"],
